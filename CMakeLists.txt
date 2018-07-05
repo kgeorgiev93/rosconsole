@@ -1,18 +1,34 @@
 cmake_minimum_required(VERSION 2.8.3)
+
+include(cmake/HunterGate.cmake)
+HunterGate(
+  URL "https://github.com/ruslo/hunter/archive/v0.22.1.tar.gz"
+  SHA1 "3d87bd3c7a54126cb0822a59d3789970c000ab19"
+)
+
+project(ros_comm)
+
+hunter_add_package(Boost COMPONENTS regex system thread)
+hunter_add_package(catkin)
+hunter_add_package(ros)
+hunter_add_package(roscpp_core)
+
 project(rosconsole)
 
 if(NOT WIN32)
   set_directory_properties(PROPERTIES COMPILE_OPTIONS "-Wall;-Wextra")
 endif()
 
-find_package(catkin REQUIRED COMPONENTS cpp_common rostime rosunit)
+find_package(catkin CONFIG REQUIRED COMPONENTS cpp_common rostime rosunit)
 
-find_package(Boost COMPONENTS regex system thread)
+find_package(Boost CONFIG REQUIRED COMPONENTS regex system thread)
+set(Boost_LIBRARIES Boost::regex Boost::system Boost::thread)
 
 # select rosconsole backend
 set(ROSCONSOLE_BACKEND "" CACHE STRING "Type of rosconsole backend, one of 'log4cxx', 'glog', 'print'")
 set(rosconsole_backend_INCLUDE_DIRS)
 set(rosconsole_backend_LIBRARIES)
+set(rosconsole_backend_INSTALLSPACE_LIBRARIES)
 if(ROSCONSOLE_BACKEND STREQUAL "" OR ROSCONSOLE_BACKEND STREQUAL "log4cxx")
   find_package(Log4cxx QUIET)
   if(NOT LOG4CXX_LIBRARIES)
@@ -22,31 +38,37 @@ if(ROSCONSOLE_BACKEND STREQUAL "" OR ROSCONSOLE_BACKEND STREQUAL "log4cxx")
   if(LOG4CXX_LIBRARIES)
     list(APPEND rosconsole_backend_INCLUDE_DIRS ${LOG4CXX_INCLUDE_DIRS})
     list(APPEND rosconsole_backend_LIBRARIES rosconsole_log4cxx rosconsole_backend_interface ${LOG4CXX_LIBRARIES})
+    list(APPEND rosconsole_backend_INSTALLSPACE_LIBRARIES
+        ros::rosconsole_log4cxx ros::rosconsole_backend_interface ${LOG4CXX_LIBRARIES})
     set(ROSCONSOLE_BACKEND "log4cxx")
   elseif(ROSCONSOLE_BACKEND STREQUAL "log4cxx")
     message(FATAL_ERROR "Couldn't find log4cxx library")
   endif()
 endif()
 if(ROSCONSOLE_BACKEND STREQUAL "" OR ROSCONSOLE_BACKEND STREQUAL "glog")
-  find_package(PkgConfig)
-  pkg_check_modules(GLOG QUIET libglog)
-  if(GLOG_FOUND)
-    list(APPEND rosconsole_backend_INCLUDE_DIRS ${GLOG_INCLUDE_DIRS})
-    list(APPEND rosconsole_backend_LIBRARIES rosconsole_glog rosconsole_backend_interface ${GLOG_LIBRARIES})
-    set(ROSCONSOLE_BACKEND "glog")
-  elseif(ROSCONSOLE_BACKEND STREQUAL "glog")
-    message(FATAL_ERROR "Couldn't find glog library")
-  endif()
+  hunter_add_package(glog)
+  find_package(glog CONFIG REQUIRED)
+  list(APPEND rosconsole_backend_INCLUDE_DIRS ${GLOG_INCLUDE_DIRS})
+  list(APPEND rosconsole_backend_LIBRARIES rosconsole_glog rosconsole_backend_interface
+                                           glog::glog)
+  list(APPEND rosconsole_backend_INSTALLSPACE_LIBRARIES
+      ros::rosconsole_glog ros::rosconsole_backend_interface)
+  set(ROSCONSOLE_DEPENDS "glog")
+  set(ROSCONSOLE_BACKEND "glog")
 endif()
 if(ROSCONSOLE_BACKEND STREQUAL "" OR ROSCONSOLE_BACKEND STREQUAL "print")
   list(APPEND rosconsole_backend_LIBRARIES rosconsole_print rosconsole_backend_interface)
+  list(APPEND rosconsole_backend_INSTALLSPACE_LIBRARIES
+        ros::rosconsole_print ros::rosconsole_backend_interface)
   set(ROSCONSOLE_BACKEND "print")
 endif()
 message(STATUS "rosconsole backend: ${ROSCONSOLE_BACKEND}")
 
+set(PROJECT_INSTALLSPACE_LIBRARIES ros::rosconsole ${rosconsole_backend_INSTALLSPACE_LIBRARIES})
 catkin_package(
-  INCLUDE_DIRS include ${rosconsole_backend_INCLUDE_DIRS} ${Boost_INCLUDE_DIRS}
-  LIBRARIES rosconsole ${rosconsole_backend_LIBRARIES} ${Boost_LIBRARIES}
+  INCLUDE_DIRS include ${rosconsole_backend_INCLUDE_DIRS}
+  LIBRARIES rosconsole ${rosconsole_backend_LIBRARIES}
+  DEPENDS "Boost COMPONENTS regex system thread" ${ROSCONSOLE_DEPENDS}
   CATKIN_DEPENDS cpp_common rostime
   CFG_EXTRAS rosconsole-extras.cmake
 )
@@ -70,6 +92,10 @@ add_library(rosconsole_backend_interface src/rosconsole/rosconsole_backend.cpp)
 
 add_library(rosconsole src/rosconsole/rosconsole.cpp)
 target_link_libraries(rosconsole ${rosconsole_backend_LIBRARIES} ${catkin_LIBRARIES} ${Boost_LIBRARIES})
+target_include_directories(rosconsole PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
 
 if(ROSCONSOLE_BACKEND STREQUAL "log4cxx")
   add_library(rosconsole_log4cxx src/rosconsole/impl/rosconsole_log4cxx.cpp)
@@ -81,7 +107,7 @@ if(ROSCONSOLE_BACKEND STREQUAL "log4cxx")
   endif()
 elseif(ROSCONSOLE_BACKEND STREQUAL "glog")
   add_library(rosconsole_glog src/rosconsole/impl/rosconsole_glog.cpp)
-  target_link_libraries(rosconsole_glog rosconsole_backend_interface ${GLOG_LIBRARIES})
+  target_link_libraries(rosconsole_glog rosconsole_backend_interface)
 elseif(ROSCONSOLE_BACKEND STREQUAL "print")
   add_library(rosconsole_print src/rosconsole/impl/rosconsole_print.cpp)
   target_link_libraries(rosconsole_print rosconsole_backend_interface)
@@ -96,6 +122,7 @@ else()
 endif()
 
 install(TARGETS rosconsole rosconsole_${ROSCONSOLE_BACKEND} rosconsole_backend_interface
+  EXPORT ${PROJECT_NAME}Targets
   ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   RUNTIME DESTINATION ${CATKIN_GLOBAL_BIN_DESTINATION})
@@ -106,6 +133,11 @@ install(FILES config/rosconsole.config
 install(DIRECTORY include/
   DESTINATION ${CATKIN_GLOBAL_INCLUDE_DESTINATION}
   FILES_MATCHING PATTERN "*.h")
+
+install(EXPORT ${PROJECT_NAME}Targets
+    DESTINATION share/${PROJECT_NAME}/cmake
+    NAMESPACE ros::
+)
 
 if(CATKIN_ENABLE_TESTING)
   catkin_add_gtest(${PROJECT_NAME}-utest test/utest.cpp)
